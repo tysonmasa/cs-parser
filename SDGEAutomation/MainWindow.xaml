@@ -1,0 +1,120 @@
+﻿<Window x:Class="SDGEAutomation.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SDGE Bill Automation"
+        Height="720"
+        Width="500"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterScreen">
+
+    <Grid Margin="30">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="25"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="15"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="25"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Title -->
+        <TextBlock
+            Text="SDGE Bill Automation"
+            FontSize="28"
+            FontWeight="Bold"
+            HorizontalAlignment="Center"/>
+
+        <!-- Username -->
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="Username"/>
+            <TextBox
+                x:Name="UsernameBox"
+                Height="32"/>
+        </StackPanel>
+
+        <!-- Password -->
+        <StackPanel Grid.Row="4">
+            <TextBlock Text="Password"/>
+            <PasswordBox
+                x:Name="PasswordBox"
+                Height="32"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="6">
+            <TextBlock Text="Download scope"/>
+            <ComboBox
+                x:Name="DownloadScopeBox"
+                Height="32"
+                SelectionChanged="DownloadScopeBox_SelectionChanged">
+                <ComboBoxItem Tag="Single" IsSelected="True">Selected property</ComboBoxItem>
+                <ComboBoxItem Tag="All">All properties</ComboBoxItem>
+                <ComboBoxItem Tag="Selected">Selected properties</ComboBoxItem>
+            </ComboBox>
+        </StackPanel>
+
+        <StackPanel Grid.Row="8" x:Name="PropertyPanel">
+            <TextBlock Text="Property Address"/>
+            <TextBox
+                x:Name="PropertyBox"
+                Height="32"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="10" x:Name="SelectedPropertiesPanel" Visibility="Collapsed">
+            <TextBlock Text="Property addresses (separate with commas)"/>
+            <TextBox
+                x:Name="SelectedPropertiesBox"
+                Height="32"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="12">
+            <TextBlock Text="Save PDF to"/>
+            <DockPanel LastChildFill="True">
+                <Button
+                    DockPanel.Dock="Right"
+                    Margin="8,0,0,0"
+                    Padding="12,0"
+                    Content="Browse..."
+                    Click="BrowseFolderButton_Click"/>
+                <TextBox
+                    x:Name="DownloadFolderBox"
+                    Height="32"
+                    VerticalContentAlignment="Center"/>
+            </DockPanel>
+        </StackPanel>
+
+        <!-- Remember -->
+        <!-- <CheckBox
+            Grid.Row="6"
+            x:Name="RememberCheck"
+            Content="Remember Me"/> -->
+
+        <!-- Login Button -->
+        <Button
+            Grid.Row="14"
+            x:Name="LoginButton"
+            Content="Download Latest SDG&amp;E Bill"
+            Height="40"
+            FontWeight="Bold"
+            Click="LoginButton_Click"/>
+
+        <!-- Status -->
+        <TextBlock
+            Grid.Row="16"
+            x:Name="StatusText"
+            Text="Status: Not Logged In"
+            FontWeight="Bold"
+            Foreground="DarkRed"/>
+    </Grid>
+</Window>
