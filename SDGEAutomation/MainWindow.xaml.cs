@@ -96,6 +96,7 @@ public partial class MainWindow : Window
 
             StatusText.Text = "Logging in...";
             await _playwright.LoginAsync(UsernameBox.Text, PasswordBox.Password);
+            StatusText.Text = "Logged in successfully, retrieving property list...";
             var addresses = scope switch
             {
                 "Single" => new[] { await _playwright.SelectPropertyAsync(PropertyBox.Text) },
@@ -109,7 +110,7 @@ public partial class MainWindow : Window
 
             var downloadedCount = 0;
             var skippedCount = 0;
-
+            StatusText.Text = "Downloading bills...";
             for (var index = 0; index < addresses.Count; index++)
             {
                 var selectedAddress = await _playwright.SelectPropertyAsync(addresses[index]);

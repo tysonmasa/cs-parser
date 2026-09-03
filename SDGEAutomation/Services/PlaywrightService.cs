@@ -181,6 +181,10 @@ public class PlaywrightService
         if (string.IsNullOrEmpty(propertyText))
             throw new ArgumentException("Property text cannot be empty.", nameof(propertyText));
 
+        var alreadyOnBillDashboard = _page.Url.Contains(
+            "/portal/Billdashboard",
+            StringComparison.OrdinalIgnoreCase);
+
         await _page.WaitForSelectorAsync("#accountList");
 
         var options = _page.Locator("#accountList option");
@@ -209,8 +213,19 @@ public class PlaywrightService
                     throw new Exception($"Matching option found for '{propertyText}', but it has no value attribute.");
 
                 await _page.SelectOptionAsync("#accountList", value);
+                if (alreadyOnBillDashboard)
+                    await WaitForAccountSwitchAsync(_page);
 
-                await _page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+                if (!alreadyOnBillDashboard)
+                {
+                    await _page.Locator("a.cancel-btn[onclick*='Billdashboard']").WaitForAsync(
+                        new LocatorWaitForOptions
+                        {
+                            State = WaitForSelectorState.Visible,
+                            Timeout = LoginCompletionTimeoutMs
+                        });
+                }
+
                 return !string.IsNullOrEmpty(address) ? address :
                     !string.IsNullOrEmpty(text) ? text : normalizedSearch;
             }
@@ -249,46 +264,40 @@ public class PlaywrightService
             throw new Exception("Browser has not been launched.");
 
         await OpenCurrentBillAsync();
-        try
-        {
-            await WaitForBillContentAsync();
-        }
-        catch (TimeoutException)
-        {
-            throw new NoBillAvailableException("No bill details are available for this property.");
-        }
+        await WaitForPageLoadingAsync(_page);
 
-        var noBillNotice = _page.GetByText(
-            new Regex("billing\\s+information\\s+will\\s+start\\s+displaying\\s+with\\s+your\\s+next\\s+bill", RegexOptions.IgnoreCase));
-        if (await noBillNotice.CountAsync() > 0)
-            throw new NoBillAvailableException("This property has no bill yet.");
+        var detailedBillLink = _page.Locator(
+            "a[aria-label=\"Click to View Your Detailed Bill PDF\"][ng-click=\"OperationSteps('DownloadPDF')\"]");
+        if (!await WaitForBillLinkAsync(detailedBillLink))
+            throw new NoBillAvailableException("No bill is available for this property.");
 
-        var detailedBillLink = await FindVisibleTextAsync(
-            new Regex("view\\s+your\\s+detailed\\s+bill\\s+pdf|view\\s+your\\s+detailed\\s+pdf", RegexOptions.IgnoreCase),
-            TimeSpan.FromSeconds(30));
-        if (detailedBillLink == null)
-            throw new NoBillAvailableException("No detailed bill PDF is available for this property.");
+        detailedBillLink = detailedBillLink.First;
 
-        var directUrl = await detailedBillLink.GetAttributeAsync("href");
-        if (Uri.TryCreate(_page.Url, UriKind.Absolute, out var pageUri) &&
-            Uri.TryCreate(directUrl, UriKind.RelativeOrAbsolute, out var billUri))
-        {
-            var absoluteBillUri = billUri.IsAbsoluteUri ? billUri : new Uri(pageUri, billUri);
-            if (absoluteBillUri.Scheme == Uri.UriSchemeHttp || absoluteBillUri.Scheme == Uri.UriSchemeHttps)
-                return await SaveBillUrlAsync(_page, absoluteBillUri.ToString(), downloadFolder, selectedAddress);
-        }
-
+        var pdfResponseTask = WaitForPdfResponseAsync(_page.Context);
         var downloadTask = _page.WaitForDownloadAsync(new PageWaitForDownloadOptions { Timeout = 15_000 });
         var popupTask = _page.WaitForPopupAsync(new PageWaitForPopupOptions { Timeout = 15_000 });
 
         await detailedBillLink.ClickAsync();
 
-        var completed = await Task.WhenAny(downloadTask, popupTask, Task.Delay(15_000));
+        var completed = await Task.WhenAny(pdfResponseTask, downloadTask, popupTask, Task.Delay(60_000));
+        if (completed == pdfResponseTask)
+        {
+            var response = await pdfResponseTask;
+            return await SavePdfResponseAsync(response, downloadFolder, selectedAddress);
+        }
+
         if (completed == downloadTask)
         {
             var download = await downloadTask;
             var path = CreateBillPath(downloadFolder, selectedAddress);
             await download.SaveAsAsync(path);
+
+            if (!await IsPdfFileAsync(path))
+            {
+                File.Delete(path);
+                return await SaveBillUrlAsync(_page, download.Url, downloadFolder, selectedAddress);
+            }
+
             return path;
         }
 
@@ -302,57 +311,180 @@ public class PlaywrightService
         throw new NoBillAvailableException("My Energy Center did not return a bill PDF for this property.");
     }
 
+    private static async Task<bool> WaitForBillLinkAsync(ILocator detailedBillLink)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await detailedBillLink.IsVisibleAsync())
+                return true;
+
+            await Task.Delay(500);
+        }
+
+        return false;
+    }
+
+    private static async Task WaitForPageLoadingAsync(IPage page)
+    {
+        var preloader = page.Locator("#preloader");
+        if (await preloader.CountAsync() == 0)
+            return;
+
+        await preloader.WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Hidden,
+            Timeout = LoginCompletionTimeoutMs
+        });
+    }
+
+    private static async Task WaitForAccountSwitchAsync(IPage page)
+    {
+        var preloader = page.Locator("#preloader");
+        try
+        {
+            await preloader.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = 5_000
+            });
+        }
+        catch (TimeoutException)
+        {
+            await Task.Delay(1_000);
+            return;
+        }
+
+        await preloader.WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Hidden,
+            Timeout = LoginCompletionTimeoutMs
+        });
+    }
+
+    private static bool IsPdfResponse(IResponse response)
+    {
+        var contentType = response.Headers.TryGetValue("content-type", out var header)
+            ? header
+            : string.Empty;
+        var contentDisposition = response.Headers.TryGetValue("content-disposition", out var disposition)
+            ? disposition
+            : string.Empty;
+
+        return contentType.Contains("application/pdf", StringComparison.OrdinalIgnoreCase) ||
+            (contentType.Contains("application/octet-stream", StringComparison.OrdinalIgnoreCase) &&
+                contentDisposition.Contains("attachment", StringComparison.OrdinalIgnoreCase)) ||
+            response.Url.Contains(".pdf", StringComparison.OrdinalIgnoreCase) ||
+            response.Url.Contains("download", StringComparison.OrdinalIgnoreCase) ||
+            response.Url.Contains("bill", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<IResponse> WaitForPdfResponseAsync(IBrowserContext context)
+    {
+        var responseTask = new TaskCompletionSource<IResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async void OnResponse(object? sender, IResponse response)
+        {
+            if (!IsPdfResponse(response))
+                return;
+
+            try
+            {
+                var body = await response.BodyAsync();
+                if (IsPdf(body))
+                    responseTask.TrySetResult(response);
+            }
+            catch
+            {
+                // The response may disappear while the browser is changing pages.
+            }
+        }
+
+        context.Response += OnResponse;
+        try
+        {
+            return await responseTask.Task.WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        finally
+        {
+            context.Response -= OnResponse;
+        }
+    }
+
+    private static async Task<string> SavePdfResponseAsync(
+        IResponse response,
+        string downloadFolder,
+        string selectedAddress)
+    {
+        var pdfBytes = await response.BodyAsync();
+        if (!IsPdf(pdfBytes))
+            throw new Exception("The bill response was not a valid PDF.");
+
+        var path = CreateBillPath(downloadFolder, selectedAddress);
+        await File.WriteAllBytesAsync(path, pdfBytes);
+        return path;
+    }
+
     private async Task OpenCurrentBillAsync()
     {
         if (_page == null)
             throw new Exception("Browser has not been launched.");
 
-        var viewBill = await FindVisibleTextAsync(new Regex("^\\s*view\\s+bill\\s*$", RegexOptions.IgnoreCase));
-        if (viewBill != null)
+        var exactViewBill = _page.Locator("a.cancel-btn[onclick*='Billdashboard']");
+        if (await exactViewBill.CountAsync() > 0 && await exactViewBill.First.IsVisibleAsync())
         {
-            await viewBill.ClickAsync();
+            var billPageNavigation = _page.WaitForURLAsync(
+                "**/portal/Billdashboard**",
+                new PageWaitForURLOptions
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = LoginCompletionTimeoutMs
+                });
+
+            await exactViewBill.First.ClickAsync();
+            try
+            {
+                await billPageNavigation;
+            }
+            catch (TimeoutException)
+            {
+                throw new Exception($"View Bill did not navigate to /portal/Billdashboard. Current page: {_page.Url}");
+            }
+
             await _page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
             return;
         }
-
-        var billingMenu = await FindVisibleTextAsync(new Regex("^\\s*billing\\s*$", RegexOptions.IgnoreCase));
-        if (billingMenu != null)
-            await billingMenu.HoverAsync();
-
-        var yourBill = await FindVisibleTextAsync(new Regex("^\\s*your\\s+bill\\s*$", RegexOptions.IgnoreCase));
-        if (yourBill == null)
-            throw new Exception("Could not find the View Bill or Your Bill navigation item.");
-
-        await yourBill.ClickAsync();
         await _page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
     }
 
-    private async Task<ILocator?> FindVisibleTextAsync(Regex pattern, TimeSpan? timeout = null)
-    {
-        if (_page == null)
-            throw new Exception("Browser has not been launched.");
+    // private async Task<ILocator?> FindVisibleTextAsync(Regex pattern, TimeSpan? timeout = null)
+    // {
+    //     if (_page == null)
+    //         throw new Exception("Browser has not been launched.");
 
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.Zero);
-        do
-        {
-            var candidates = _page.Locator("a").Filter(new LocatorFilterOptions { HasTextRegex = pattern });
-            var count = await candidates.CountAsync();
-            for (var index = 0; index < count; index++)
-            {
-                var candidate = candidates.Nth(index);
-                if (await candidate.IsVisibleAsync())
-                    return candidate;
-            }
+    //     var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.Zero);
+    //     do
+    //     {
+    //         var candidates = _page.Locator("a").Filter(new LocatorFilterOptions { HasTextRegex = pattern });
+    //         var count = await candidates.CountAsync();
+    //         for (var index = 0; index < count; index++)
+    //         {
+    //             var candidate = candidates.Nth(index);
+    //             if (await candidate.IsVisibleAsync())
+    //                 return candidate;
+    //         }
 
-            if (timeout is null || DateTime.UtcNow >= deadline)
-                break;
+    //         if (timeout is null || DateTime.UtcNow >= deadline)
+    //             break;
 
-            await Task.Delay(500);
-        }
-        while (DateTime.UtcNow < deadline);
+    //         await Task.Delay(500);
+    //     }
+    //     while (DateTime.UtcNow < deadline);
 
-        return null;
-    }
+    //     return null;
+    // }
 
     private async Task WaitForBillContentAsync()
     {
@@ -373,14 +505,30 @@ public class PlaywrightService
         if (_playwright == null)
             throw new Exception("Browser automation is not available.");
 
-        var billUrl = billPage.Url;
-        if (!Uri.TryCreate(billUrl, UriKind.Absolute, out var parsedUrl) ||
-            (parsedUrl.Scheme != Uri.UriSchemeHttp && parsedUrl.Scheme != Uri.UriSchemeHttps))
+        Exception? lastError = null;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+        while (DateTime.UtcNow < deadline)
         {
-            throw new Exception("The detailed bill opened without a downloadable PDF address.");
+            var billUrl = billPage.Url;
+            if (Uri.TryCreate(billUrl, UriKind.Absolute, out var parsedUrl) &&
+                (parsedUrl.Scheme == Uri.UriSchemeHttp || parsedUrl.Scheme == Uri.UriSchemeHttps))
+            {
+                try
+                {
+                    return await SaveBillUrlAsync(billPage, billUrl, downloadFolder, selectedAddress);
+                }
+                catch (Exception exception)
+                {
+                    lastError = exception;
+                }
+            }
+
+            await Task.Delay(1_000);
         }
 
-        return await SaveBillUrlAsync(billPage, billUrl, downloadFolder, selectedAddress);
+        throw new Exception(
+            "The detailed bill opened, but the PDF was not ready after 60 seconds.",
+            lastError);
     }
 
     private async Task<string> SaveBillUrlAsync(IPage sourcePage, string billUrl, string downloadFolder, string selectedAddress)
@@ -388,15 +536,16 @@ public class PlaywrightService
         if (_playwright == null)
             throw new Exception("Browser automation is not available.");
 
-        // A PDF viewer can request its document in byte ranges. Requesting the opened
-        // tab's URL afresh, with the authenticated session cookies, gets the complete PDF.
+        // Reuse the browser's authenticated cookies when requesting the complete PDF.
         var cookies = await sourcePage.Context.CookiesAsync(new[] { billUrl });
         var cookieHeader = string.Join("; ", cookies.Select(cookie => $"{cookie.Name}={cookie.Value}"));
         var requestContext = await _playwright.APIRequest.NewContextAsync(new APIRequestNewContextOptions
         {
             ExtraHTTPHeaders = new Dictionary<string, string>
             {
-                ["Cookie"] = cookieHeader
+                ["Accept"] = "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+                ["Cookie"] = cookieHeader,
+                ["Referer"] = sourcePage.Url
             }
         });
 
@@ -411,6 +560,9 @@ public class PlaywrightService
             if (pdfBytes.Length == 0)
                 throw new Exception("My Energy Center returned an empty bill PDF.");
 
+            if (!IsPdf(pdfBytes))
+                throw new Exception("My Energy Center returned a non-PDF response for the detailed bill.");
+
             await File.WriteAllBytesAsync(path, pdfBytes);
             return path;
         }
@@ -418,6 +570,27 @@ public class PlaywrightService
         {
             await requestContext.DisposeAsync();
         }
+    }
+
+    private static async Task<bool> IsPdfFileAsync(string path)
+    {
+        var bytes = new byte[5];
+        await using var stream = File.OpenRead(path);
+        var bytesRead = await stream.ReadAsync(bytes);
+        return bytesRead == bytes.Length && IsPdf(bytes);
+    }
+
+    private static bool IsPdf(byte[] bytes)
+    {
+        var searchLength = Math.Min(bytes.Length - 4, 1024);
+        for (var index = 0; index < searchLength; index++)
+        {
+            if (bytes[index] == '%' && bytes[index + 1] == 'P' && bytes[index + 2] == 'D' &&
+                bytes[index + 3] == 'F' && bytes[index + 4] == '-')
+                return true;
+        }
+
+        return false;
     }
 
     private static string CreateBillPath(string downloadFolder, string selectedAddress)

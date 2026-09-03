@@ -1,0 +1,37 @@
+## Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug*/
+[Rr]elease*/
+[Aa]rtifacts/
+
+## Visual Studio and Rider
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## NuGet and generated files
+*.nupkg
+*.snupkg
+packages/
+project.assets.json
+project.nuget.cache
+
+## Test and coverage results
+TestResults/
+*.trx
+coverage/
+coverage-report/
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## Local environment and secrets
+.env
+.env.*
+!.env.example
